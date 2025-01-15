@@ -1,23 +1,22 @@
 import path, { basename } from "path";
 import * as vscode from "vscode";
 import { Parsed, find } from "@xliic/preserving-json-yaml-parser";
+import { Audit, Issue, Grades, ReportedIssue } from "@xliic/common/audit";
 
 import { Cache } from "../cache";
 import { findMapping } from "../bundler";
-import {
-  Audit,
-  AuditContext,
-  Grades,
-  Issue,
-  IssuesByDocument,
-  MappingNode,
-  ReportedIssue,
-} from "../types";
+import { AuditContext, IssuesByDocument, MappingNode } from "../types";
 import { getLocationByPointer } from "./util";
 import { fromInternalUri } from "../external-refs";
 
-export function updateAuditContext(context: AuditContext, uri: string, audit: Audit) {
+export function updateAuditContext(
+  context: AuditContext,
+  uri: string,
+  audit: Audit,
+  auditTempDirectory: string
+) {
   context.auditsByMainDocument[uri] = audit;
+  context.auditTempDirectories[uri] = auditTempDirectory;
 
   const auditsBySubDocument = {
     [audit.summary.documentUri]: audit,
@@ -73,6 +72,9 @@ export async function parseAuditReport(
   }
 
   const result = {
+    valid: report.valid,
+    openapiState: report.openapiState,
+    minimalReport: report.minimalReport,
     summary: {
       ...grades,
       documentUri,
@@ -267,7 +269,7 @@ function readSummary(assessment: any): Grades {
     grades.invalid = true;
   }
 
-  grades.all = grades.datavalidation.value + grades.security.value + grades.oasconformance.value;
+  grades.all = Math.round(assessment.score ? assessment.score : 0);
 
   return grades;
 }

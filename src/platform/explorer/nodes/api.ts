@@ -22,11 +22,28 @@ export class ApiNode extends AbstractExplorerNode {
   }
 
   async getChildren(): Promise<ExplorerNode[]> {
-    return [new OasNode(this, this.store, this.api), new AuditNode(this, this.store, this.api)];
+    const res = [];
+    const apiId = this.getApiId();
+    const apiTechName = this.getApiTechnicalName();
+    const readonly = apiId !== apiTechName;
+    if (readonly) {
+      this.store.readonlyApis.add(apiId);
+    }
+    res.push(new OasNode(this, this.store, this.api, readonly));
+    res.push(new AuditNode(this, this.store, this.api));
+    return res;
   }
 
   getApiId(): string {
     return this.api.desc.id;
+  }
+
+  getApiTechnicalName(): string {
+    return this.api.desc.technicalName;
+  }
+
+  getCollectionTechnicalName(): string {
+    return (this.parent as CollectionNode).getCollectionTechnicalName();
   }
 }
 
@@ -50,8 +67,18 @@ export class AuditNode extends AbstractExplorerNode {
 export class OasNode extends AbstractExplorerNode {
   readonly icon: { dark: string; light: string } | string;
 
-  constructor(parent: ExplorerNode, private store: PlatformStore, private api: Api) {
-    super(parent, `${parent.id}-spec}`, "OpenAPI definition", vscode.TreeItemCollapsibleState.None);
+  constructor(
+    parent: ExplorerNode,
+    private store: PlatformStore,
+    private api: Api,
+    readonly?: boolean
+  ) {
+    super(
+      parent,
+      `${parent.id}-spec}`,
+      "OpenAPI definition" + (readonly ? " (read only)" : ""),
+      vscode.TreeItemCollapsibleState.None
+    );
     this.icon = "code";
     this.item.command = {
       command: "openapi.platform.editApi",

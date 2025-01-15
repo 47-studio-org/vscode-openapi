@@ -4,7 +4,10 @@
 */
 
 import got, { Method, OptionsOfJSONResponseBody, HTTPError } from "got";
-import { NamingConvention, SearchCollectionsResponse } from "./types";
+import { AuditCompliance } from "@xliic/common/audit";
+import { NamingConvention } from "@xliic/common/platform";
+
+import { ApiAuditReport, Category, SearchCollectionsResponse } from "./types";
 import {
   Api,
   ListCollectionsResponse,
@@ -14,6 +17,7 @@ import {
   Logger,
   CollectionFilter,
   UserData,
+  Tag,
 } from "./types";
 
 import { DataDictionary, DataFormats } from "@xliic/common/data-dictionary";
@@ -39,6 +43,19 @@ function gotOptions(
     },
     hooks: {
       afterResponse: [logRequest],
+    },
+    retry: {
+      errorCodes: [
+        "ENOMEM",
+        "ETIMEDOUT",
+        "ECONNRESET",
+        "EADDRINUSE",
+        "ECONNREFUSED",
+        "EPIPE",
+        "ENOTFOUND",
+        "ENETUNREACH",
+        "EAI_AGAIN",
+      ],
     },
   };
 }
@@ -82,7 +99,7 @@ export async function listApis(
   logger: Logger
 ): Promise<ListApisResponse> {
   const { body } = await got(
-    `api/v1/collections/${collectionId}/apis?withTags=true&perPage=0`,
+    `api/v2/collections/${collectionId}/apis?withTags=true&perPage=0`,
     gotOptions("GET", options, logger)
   );
   return <ListApisResponse>body;
@@ -131,13 +148,14 @@ export async function readAuditReport(
   apiId: string,
   options: PlatformConnection,
   logger: Logger
-): Promise<any> {
+): Promise<ApiAuditReport> {
   const { body } = <any>(
     await got(`api/v1/apis/${apiId}/assessmentreport`, gotOptions("GET", options, logger))
   );
 
   const text = Buffer.from(body.data, "base64").toString("utf-8");
-  return JSON.parse(text);
+  const data = JSON.parse(text);
+  return { tid: body.tid, data };
 }
 
 export async function deleteApi(apiId: string, options: PlatformConnection, logger: Logger) {
@@ -147,6 +165,7 @@ export async function deleteApi(apiId: string, options: PlatformConnection, logg
 export async function createApi(
   collectionId: string,
   name: string,
+  tags: string[],
   contents: Buffer,
   options: PlatformConnection,
   logger: Logger
@@ -155,6 +174,7 @@ export async function createApi(
     ...gotOptions("POST", options, logger),
     json: {
       cid: collectionId,
+      tags,
       name,
       specfile: contents.toString("base64"),
     },
@@ -280,6 +300,12 @@ export async function getDataDictionaryFormats(
     } else if (type === "string") {
       props = stringProps;
     }
+
+    // drop empty default values
+    if (value["default"] === "") {
+      delete value["default"];
+    }
+
     for (const prop of props) {
       if (value.hasOwnProperty(prop)) {
         value[prop] = parseInt(value[prop], 10);
@@ -288,6 +314,19 @@ export async function getDataDictionaryFormats(
   }
 
   return formats as DataFormats;
+}
+
+export async function getTags(options: PlatformConnection, logger: Logger): Promise<Tag[]> {
+  const { body } = await got(`api/v2/tags`, gotOptions("GET", options, logger));
+  return <Tag[]>(body as any).list;
+}
+
+export async function getCategories(
+  options: PlatformConnection,
+  logger: Logger
+): Promise<Category[]> {
+  const { body } = await got(`api/v2/categories`, gotOptions("GET", options, logger));
+  return <Category[]>(body as any).list;
 }
 
 export async function createDefaultScanConfig(
@@ -301,7 +340,6 @@ export async function createDefaultScanConfig(
       name: "default",
     },
   });
-  console.log("body", body);
   return body.id;
 }
 
@@ -345,6 +383,24 @@ export async function createScanConfig(
   return body.id;
 }
 
+export async function createScanConfigNew(
+  apiId: string,
+  name: string,
+  config: string,
+  options: PlatformConnection,
+  logger: Logger
+): Promise<any> {
+  const scanConfiguration = Buffer.from(config).toString("base64");
+  const { body } = <any>await got(`api/v2/apis/${apiId}/scanConfigurations`, {
+    ...gotOptions("POST", options, logger),
+    json: {
+      name,
+      file: scanConfiguration,
+    },
+  });
+  return body.id;
+}
+
 export async function listScanReports(
   apiId: string,
   options: PlatformConnection,
@@ -365,6 +421,17 @@ export async function readScanReport(
     ...gotOptions("GET", options, logger),
   });
   return body.data;
+}
+
+export async function readScanReportNew(
+  reportId: string,
+  options: PlatformConnection,
+  logger: Logger
+): Promise<any> {
+  const { body } = <any>await got(`api/v2/scanReports/${reportId}`, {
+    ...gotOptions("GET", options, logger),
+  });
+  return body.file;
 }
 
 export async function readTechnicalCollection(
@@ -402,4 +469,48 @@ export async function createTechnicalCollection(
     },
   });
   return body.desc.id;
+}
+
+export async function testConnection(
+  options: PlatformConnection,
+  logger: Logger
+): Promise<{ success: true } | { success: false; message: string }> {
+  try {
+    await got("api/v2/collections?page=1&perPage=1", {
+      ...gotOptions("GET", options, logger),
+      timeout: {
+        request: 5000,
+      },
+    });
+    return { success: true };
+  } catch (ex) {
+    return { success: false, message: `${ex}` };
+  }
+}
+
+export async function readAuditCompliance(
+  taskId: string,
+  options: PlatformConnection,
+  logger: Logger
+): Promise<AuditCompliance> {
+  const { body } = <any>(
+    await got(`api/v2/sqgs/audit/reportComplianceStatus/${taskId}?readSqg=true&readReport=false`, {
+      ...gotOptions("GET", options, logger),
+    })
+  );
+  return body;
+}
+
+export async function readAuditReportSqgTodo(
+  taskId: string,
+  options: PlatformConnection,
+  logger: Logger
+): Promise<ApiAuditReport> {
+  const { body } = <any>(
+    await got(`api/v2/sqgs/audit/todo/${taskId}`, gotOptions("GET", options, logger))
+  );
+
+  const text = Buffer.from(body.data, "base64").toString("utf-8");
+  const data = JSON.parse(text);
+  return { tid: body.tid, data };
 }

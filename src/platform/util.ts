@@ -1,6 +1,13 @@
 import path from "path";
 import * as vscode from "vscode";
-import { NamingConvention, platformUriScheme } from "./types";
+
+import {
+  NamingConvention,
+  DefaultApiNamingPattern,
+  DefaultCollectionNamingPattern,
+} from "@xliic/common/platform";
+
+import { platformUriScheme } from "./types";
 
 export async function confirmed(prompt: string) {
   const confirmation = await vscode.window.showInformationMessage(prompt, "Yes", "Cancel");
@@ -60,8 +67,19 @@ function createNamingConventionInputBoxOptions(
 }
 
 export function createApiNamingConventionInputBoxOptions(convention: NamingConvention) {
-  return createNamingConventionInputBoxOptions(convention, "^[\\w _.-]{1,64}$");
+  return createNamingConventionInputBoxOptions(convention, DefaultApiNamingPattern);
 }
+
 export function createCollectionNamingConventionInputBoxOptions(convention: NamingConvention) {
-  return createNamingConventionInputBoxOptions(convention, "^[\\w _.\\/:-]{1,2048}$");
+  return createNamingConventionInputBoxOptions(convention, DefaultCollectionNamingPattern);
+}
+
+export function formatException(info: string, ex: any) {
+  const message = ex?.message;
+  const transactionId = ex?.response?.headers?.["x-42c-transactionid"]
+    ? `Transaction ID: ${ex.response.headers["x-42c-transactionid"]}`
+    : undefined;
+  const body = ex?.response?.body ? JSON.stringify(ex.response.body) : undefined;
+
+  return [info, message, transactionId, body].filter((part) => part !== undefined).join(" ");
 }

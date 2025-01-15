@@ -1,5 +1,204 @@
 # Changelog
 
+## Version 4.31.0 (December 23, 2024)
+
+- Implement support for SQGs in Audit when using CLI binary
+- Add ability to select CLI binary as a runtime for Audit for enterprise customers
+- Support tagging of local OpenAPI files with platform tags
+- Allow removing Scenarios in Scan config UI
+
+## Version 4.30.1 (December 3, 2024)
+
+- Increase stdout buffer size when running the Scan using the CLI binary
+
+## Version 4.30.0 (November 20, 2024)
+
+- Added ability to tag local API files or link them to the platform APIs
+- Updated Scan configuration web UI to allow specifying reportMaxSize option
+- Added extra check for the CLI binary updates when testes in the Config web UI
+- Added workaround for ENOMEM exceptions when invoking the platform APIs
+- Fix issue with example background colors in SwaggerUI preview #295
+
+## Version 4.29.2 (October 7, 2024)
+
+- Remove whitespace characters during the freemium signup flow
+
+## Version 4.29.0 (October 1, 2024)
+
+- Show subscription status in the Config webapp
+- Add Scan button to the toolbar
+- Do not automatically re-try failing HTTP request sent from Scan / Try it UIs
+
+## Version 4.28.0 (August 13, 2024)
+
+- New UI for logins and signups for 42Crunch platform
+- Do not rely on platform API calls when creating Scan configuration for enterprise customers, if CLI runtime is choosen
+- Do not display warnings when displaying high priority semantic/structural issues in the Audit
+- Better handling of http proxies when CLI binary is used
+- Allow specifying location for the CLI binary
+- Fix issue in the Scan when using response processing with 'default' responses
+
+## Version 4.27.0 (June 27, 2024)
+
+- Make API Security Testing Binary required to run Audits
+- Add ability to extract variables in Scan by clicking on the response body values
+- Add 'Context' tab to the Scan UI to show information about variables used by Operation
+
+## Version 4.26.3 (June 5, 2024)
+
+- Fix issue with text editor contents jerking on code lenses being added/removed during editing #275 
+
+## Version 4.26.2 (May 31, 2024)
+
+- Add support for floating windows in extension webviews
+- Change default runtime for Scan to API Security Testing Binary
+
+## Version 4.26.0 (May 22, 2024)
+
+- Allow all users to run 42Crunch Scan
+- Show 42Crunch icon in the status bar to authenticated users
+- Add command "Open Scan configuration file for the current OpenAPI file" to display relevant Scan config
+- Add Audit/Scan code lenses to the top of the OpenAPI file
+- Allow switching between different authentication types (Security Audit Token/IDE Token) if both are available
+- Allow running full Scans (in addition to per-operation Scans)
+
+## Version 4.25.3 (April 23, 2024)
+
+- Fix resource leak issue reported in #266
+
+## Version 4.25.2 (April 18, 2024)
+
+- Add setting to disable contribution of OpenAPI schemas for YAML files #269 
+- Allow configuring auth info for external references #256
+
+## Version 4.25.1 (March 1, 2024)
+
+- Downgrade swagger-ui dependency in preview to fix #264
+- Display 'security' property in the operation nodes in OpenAPI Explorer
+
+## Version 4.25.0 (February 29, 2024)
+
+- Make scand-manager timeout configurable
+
+## Version 4.24.1 (February 23, 2024)
+
+- Fix issue where authorization tests dialog would not show in Scan UI
+
+## Version 4.24.0 (February 19, 2024)
+
+- Updated to the lastest SwaggerUI version for OpenAPI preview
+- Support form/urlencoded bodies in external requests in Scan UI
+- Support raw bodies in Scan UI
+
+## Version 4.23.0 (February 15, 2024)
+
+- Display 'requestBody' in the operation node OpenAPI Explorer
+- Display operation child nodes in OperationID / Tag nodes in OpenAPI Explorer
+- Fix labels of issue severity in the Scan report
+- Stop hiding debug logs in the Logging view in the Scan report
+
+## Version 4.22.1 (February 13, 2024)
+
+- Fix issue where the temp apis on the platform were not properly cleaned up
+
+## Version 4.22.0 (February 13, 2024)
+
+- Check for updates of the 42Crunch AST binary and prompt user to upgrade
+- Add support for BOLA/BFLA tests in Scan UI
+
+## Version 4.21.1 (January 22, 2024)
+
+- Fix for creating temp APIs when API Naming Convention is configured
+- Fixes for form validation in Settings webapp
+
+## Version 4.21.0 (January 18, 2024)
+
+- Change scope of a number of configuration settings to "machine", to disallow overriding
+  this in a workspace, as having different per-workspace settings for likes of "platformUrl"
+  was very confusing.
+
+## Version 4.20.0 (January 11, 2024)
+
+- Implement context menu command to remove operations and paths in OpenAPI Explorer view
+- Allow configuring name of a temporary collection when using 42Crunch Platform for performing Security Audit,
+  and make sure it matches org's collection naming convention
+- Allow specifying a list of tags to be automatically added to all APIs created by the extention on 42Crunch platform
+- Fix display of SQG configuration for audits executed using 42Crunch Platform
+- In 42Crunch Platform explorer view, APIs with 'technical names' are made read-only, and if possible a link
+  to a filesystem location for relevant OpenAPI file is provided
+
+## Version 4.19.5 (January 8, 2024)
+
+- Fix issue when dots in operationId prevented 'Try' in Scan UI from sending the request
+
+## Version 4.19.2 (December 5, 2023)
+
+- Add Scan/Audit/Try it commands to the context menu in the OpenAPI tree
+- Cleanup context menu titles removing 'OpenAPI:' prefix
+- Update schemas for 42Crunch protection-types extensions
+- Show extra logs when running Conformance Scan
+
+## Version 4.19.0 (November 29, 2023)
+
+- New OpenAPI tree, with individual sections merged into one tree and new Search functionality.
+- Support for running Security Audit and Conformance Scan locally, using 42Crunch CLI binaries.
+- New UI for API Conformance Scan with support for scenarios, authentication, etc.
+
+## Version 4.18.6 (August 2, 2023)
+
+- Fixes to support updated scan report
+
+## Version 4.18.2 (June 9, 2023)
+
+- Fix bug with sorting and filtering issues in Security Audit report
+
+## Version 4.18.1 (June 5, 2023)
+
+- Update styling of Security Audit Report
+- Display SQG status in Security Audit
+- Add filtering to Conformance Scan and Security Audit reports
+- Implement single-operation Security Audit
+- Add configuration option to disable use of CodeLenses #185
+
+## Version 4.17.0 (May 12, 2023)
+
+- Add support running Conformance Scan using scand-manager
+- Add Settings webapp
+- Update Data Dictionary browser UI
+- Show Audit report in case pre-scan Audit fails
+
+## Version 4.16.6 (April 7, 2023)
+
+- Fix issue in TryIt where request parameters couldn't be deleted
+
+## Version 4.16.5 (April 4, 2023)
+
+- Fix issue where TryIt woudln't use value defined in parameter's 'example' #213
+- Fix issue where Scan report incorrectly shows that response code wasn't found
+- Fix color for trashcan icon in the dark theme
+
+## Version 4.16.4 (March 29, 2023)
+
+- Fix issue with TryIt request body editing input failing on invalid JSON
+- Improve errors displaying when editing request parameters in TryIt
+
+## Version 4.16.3 (March 24, 2023)
+
+- Fix issue with TryIt failing on Swagger/OpenAPI files with no servers or host defined
+
+## Version 4.16.2 (March 23, 2023)
+
+- Fix issue with TryIt failing to display UI #209
+
+## Version 4.16.1 (March 22, 2023)
+
+- Fix issue with extra quotes added by intellisence #210
+
+## Version 4.16 (March 21, 2023)
+
+- Add support for Swagger 2.0 in TryIt and Conformance Scan
+- Restyle TryIt and Scan UI
+
 ## Version 4.15 (October 28, 2022)
 
 - Add support for single operation Conformance Scan

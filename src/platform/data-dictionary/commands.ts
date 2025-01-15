@@ -9,10 +9,13 @@ import { configuration } from "../../configuration";
 import { DataDictionaryWebView } from "./view";
 import { PlatformContext } from "../types";
 import { find, joinJsonPointer, parseJsonPointer, Path } from "@xliic/preserving-json-yaml-parser";
+import { DataFormat } from "@xliic/common/data-dictionary";
 import { Cache } from "../../cache";
 import { replaceObject } from "../../edits/replace";
 import { DataDictionaryFormat, PlatformStore } from "../stores/platform-store";
-import { DataDictionaryDiagnostic } from "../../types";
+import { DataDictionaryDiagnostic, OpenApiVersion } from "../../types";
+import { getOpenApiVersion } from "../../parsers";
+import { delay } from "../../time-util";
 
 export default (
   cache: Cache,
@@ -23,13 +26,12 @@ export default (
 ) => ({
   browseDataDictionaries: async () => {
     const formats = await store.getDataDictionaries();
-    await dataDictionaryView.show();
     dataDictionaryView.sendShowDictionaries(formats);
   },
 
   dataDictionaryPreAuditBulkUpdateProperties: async (documentUri: vscode.Uri): Promise<boolean> => {
-    const hasDiagnostics = dataDictionaryDiagnostics.has(documentUri);
-    if (hasDiagnostics) {
+    const diagnostics = dataDictionaryDiagnostics.get(documentUri);
+    if (diagnostics !== undefined && diagnostics.length > 0) {
       const fix = await shouldFixDataDictionaryErrros();
       if (fix === "cancel") {
         return false;
@@ -41,11 +43,11 @@ export default (
           await documentBulkUpdate(store, cache, dataDictionaryDiagnostics, editor.document);
           return true;
         }
-        // no document updated
-        vscode.window.showInformationMessage(
-          `Failed to update contents of the ${documentUri} with Data Dictionary properties`
-        );
       }
+      // no document updated
+      vscode.window.showInformationMessage(
+        `Failed to update contents of the ${documentUri} with Data Dictionary properties`
+      );
     }
     return true;
   },
@@ -63,11 +65,11 @@ export default (
     const found = formats.filter((f) => f.name === format).pop();
 
     if (parsed !== undefined && found !== undefined) {
+      const version = getOpenApiVersion(parsed);
+
       const updated: any = { ...node };
       for (const name of schemaProps) {
-        if ((found.format as any)[name] !== undefined) {
-          updated[name] = (found.format as any)[name];
-        }
+        updatePropertyOfExistingObject(version, nodePath, updated, name, found.format);
       }
       updated["x-42c-format"] = found.id;
 
@@ -95,15 +97,16 @@ export default (
   ) => {
     const document = editor.document;
     const parsed = cache.getParsedDocument(editor.document);
+    const version = getOpenApiVersion(parsed);
     const formats = await store.getDataDictionaryFormats();
     const found = formats.filter((f) => f.name === format).pop();
 
-    let updated: any;
+    const updated: any = { ...node };
     if (parsed !== undefined && found !== undefined) {
       if (property === "x-42c-format") {
-        updated = { ...node, "x-42c-format": found.id };
+        updated["x-42c-format"] = found.id;
       } else {
-        updated = { ...node, [property]: (found.format as any)[property] };
+        updatePropertyOfExistingObject(version, nodePath, updated, property, found.format);
       }
 
       let text = "";
@@ -143,23 +146,56 @@ const schemaProps = [
 
 async function shouldFixDataDictionaryErrros(): Promise<"fix" | "skip" | "cancel"> {
   const config = configuration.get<"ask" | "always" | "never">("dataDictionaryPreAuditFix");
+
+  await delay(100); // workaround for #133073
   if (config === "ask") {
     const choice = await vscode.window.showInformationMessage(
       "Found Data Dictionary mismatch, update the document with Data Dictionary properties?",
       { modal: true },
-      { title: "Yes, update", id: "fix" },
-      { title: "No, don't update", id: "skip" },
-      { title: "Always update", id: "always" },
-      { title: "Never update", id: "never" }
+      { title: "Update", id: "fix" },
+      { title: "Don't update", id: "skip" }
     );
+
+    if (choice?.id === "fix") {
+      vscode.window
+        .showInformationMessage(
+          "Remember your choice and always update document with Data Dictionary properties?",
+          { modal: false },
+          { title: "Always update", id: "always" },
+          { title: "Cancel", id: "cancel" }
+        )
+        .then((choice) => {
+          if (choice?.id === "always") {
+            configuration.update(
+              "dataDictionaryPreAuditFix",
+              "always",
+              vscode.ConfigurationTarget.Global
+            );
+          }
+        });
+    } else if (choice?.id === "skip") {
+      vscode.window
+        .showInformationMessage(
+          "Remember your choice and never update document with Data Dictionary properties?",
+          { modal: false },
+          { title: "Never update", id: "never" },
+          { title: "Cancel", id: "cancel" }
+        )
+        .then((choice) => {
+          if (choice?.id === "never") {
+            configuration.update(
+              "dataDictionaryPreAuditFix",
+              "never",
+              vscode.ConfigurationTarget.Global
+            );
+          }
+        });
+    }
+
     if (choice === undefined) {
       return "cancel";
-    } else if (choice.id === "always" || choice.id === "never") {
-      await configuration.update("dataDictionaryPreAuditFix", choice.id);
     }
     if (choice.id === "fix") {
-      return "fix";
-    } else if (choice.id == "always") {
       return "fix";
     } else {
       return "skip";
@@ -180,6 +216,8 @@ async function documentBulkUpdate(
   if (parsed === undefined) {
     return;
   }
+
+  const version = getOpenApiVersion(parsed);
 
   const formats: Map<string, DataDictionaryFormat> = new Map();
   for (const format of await store.getDataDictionaryFormats()) {
@@ -209,9 +247,13 @@ async function documentBulkUpdate(
     if (node) {
       const updated: any = { ...node };
       for (const name of schemaProps) {
-        if ((format.format as any)[name] !== undefined) {
-          updated[name] = (format.format as any)[name];
-        }
+        updatePropertyOfExistingObject(
+          version,
+          parseJsonPointer(pointer),
+          updated,
+          name,
+          format.format
+        );
       }
       updated["x-42c-format"] = format.id;
       let text = "";
@@ -228,4 +270,42 @@ async function documentBulkUpdate(
   const workspaceEdit = new vscode.WorkspaceEdit();
   workspaceEdit.set(document.uri, edits);
   await vscode.workspace.applyEdit(workspaceEdit);
+}
+
+function updatePropertyOfExistingObject(
+  version: OpenApiVersion,
+  path: Path,
+  existing: any,
+  name: string,
+  format: DataFormat
+) {
+  const value = (format as any)[name];
+
+  // skip properties not defined in the format
+  if (value === undefined) {
+    return;
+  }
+
+  if (name !== "example") {
+    existing[name] = value;
+    return;
+  }
+
+  // property name is 'example'
+
+  // dont update already existing examples
+  if (existing.hasOwnProperty("example") || existing.hasOwnProperty("x-42c-sample")) {
+    return;
+  }
+
+  // use 'x-42c-sample' for Swagger2.0 parameter objects
+  if (
+    version === OpenApiVersion.V2 &&
+    !(path.includes("schema") || path.includes("definitions") || path.includes("x-42c-schemas"))
+  ) {
+    existing["x-42c-sample"] = value;
+    return;
+  }
+
+  existing["example"] = value;
 }

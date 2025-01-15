@@ -4,22 +4,31 @@
 */
 
 import * as vscode from "vscode";
-import { WebView } from "../../web-view";
-import {
-  DataDictionaryRequest,
-  DataDictionaryResponse,
-} from "@xliic/common/messages/data-dictionary";
+import { Webapp } from "@xliic/common/webapp/data-dictionary";
+import { ShowDictionaryMessage } from "@xliic/common/data-dictionary";
+import { WebView } from "../../webapps/web-view";
 
-export class DataDictionaryWebView extends WebView<DataDictionaryRequest, DataDictionaryResponse> {
-  responseHandlers = {
+export class DataDictionaryWebView extends WebView<Webapp> {
+  hostHandlers = {
     noop: () => Promise.resolve(),
   };
 
   constructor(extensionPath: string) {
-    super(extensionPath, "data-dictionary", "Data Dictionary Browser", vscode.ViewColumn.One);
+    super(extensionPath, "data-dictionary", "Data Dictionary", vscode.ViewColumn.One);
+
+    vscode.window.onDidChangeActiveColorTheme((e) => {
+      if (this.isActive()) {
+        this.sendColorTheme(e);
+      }
+    });
   }
 
-  async sendShowDictionaries(payload: DataDictionaryRequest["payload"]) {
-    return this.sendRequest({ command: "showDictionary", payload });
+  async onStart() {
+    await this.sendColorTheme(vscode.window.activeColorTheme);
+  }
+
+  async sendShowDictionaries(payload: ShowDictionaryMessage["payload"]) {
+    await this.show();
+    await this.sendRequest({ command: "showDictionary", payload });
   }
 }

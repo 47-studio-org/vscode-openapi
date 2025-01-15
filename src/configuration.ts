@@ -11,7 +11,6 @@ import {
   ExtensionContext,
   Uri,
   workspace,
-  WorkspaceConfiguration,
 } from "vscode";
 import { configId } from "./types";
 
@@ -52,8 +51,9 @@ export class Configuration {
       : workspace.getConfiguration(this.section).get<T>(section, defaultValue)!;
   }
 
-  update(section: string, value: any, configurationTarget?: ConfigurationTarget) {
-    return workspace.getConfiguration(this.section).update(section, value, configurationTarget);
+  update(section: string, value: any, configurationTarget: ConfigurationTarget) {
+    const target = workspace.workspaceFolders ? configurationTarget : ConfigurationTarget.Global;
+    return workspace.getConfiguration(this.section).update(section, value, target);
   }
 
   track<T>(section: string, callback: Function, defaultValue?: T) {

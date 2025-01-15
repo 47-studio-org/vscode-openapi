@@ -3,19 +3,20 @@ import * as vscode from "vscode";
 import { PlatformStore } from "../stores/platform-store";
 import { Cache } from "../../cache";
 import { refreshAuditReport } from "../audit";
-import { AuditContext } from "../../types";
+import { AuditContext, OpenApiVersion } from "../../types";
 import { makePlatformUri } from "../util";
-import { AuditReportWebView } from "../../audit/report";
-import { parseAuditReport, updateAuditContext } from "../../audit/audit";
-import { setDecorations, updateDecorations } from "../../audit/decoration";
-import { updateDiagnostics } from "../../audit/diagnostic";
+import { AuditWebView } from "../../audit/view";
+import { parseAuditReport } from "../../audit/audit";
+import { setDecorations } from "../../audit/decoration";
+import { setAudit } from "../../audit/service";
+import { saveAuditReportToTempDirectory } from "../../audit/util";
 
 export default (
   store: PlatformStore,
   context: vscode.ExtensionContext,
   auditContext: AuditContext,
   cache: Cache,
-  reportWebView: AuditReportWebView
+  reportWebView: AuditWebView
 ) => ({
   openAuditReport: async (apiId: string) => {
     await vscode.window.withProgress<void>(
@@ -30,7 +31,7 @@ export default (
           const document = await vscode.workspace.openTextDocument(uri);
           const audit = await refreshAuditReport(store, cache, auditContext, document);
           if (audit) {
-            reportWebView.show(audit);
+            await reportWebView.showReport(audit);
           }
         } catch (e) {
           vscode.window.showErrorMessage(`Unexpected error: ${e}`);
@@ -39,7 +40,18 @@ export default (
     );
   },
 
-  editorLoadAuditReportFromFile: async (editor: vscode.TextEditor, edit: vscode.TextEditorEdit) => {
+  loadAuditReportFromFile: async () => {
+    const editor = vscode.window.activeTextEditor;
+    if (
+      editor === undefined ||
+      cache.getDocumentVersion(editor.document) === OpenApiVersion.Unknown
+    ) {
+      vscode.window.showErrorMessage(
+        "Can't load Security Audit report for this document. Please open an OpenAPI document first."
+      );
+      return;
+    }
+
     const selection = await vscode.window.showOpenDialog({
       title: "Load Security Audit report",
       canSelectFiles: true,
@@ -54,17 +66,17 @@ export default (
     if (selection) {
       const text = await vscode.workspace.fs.readFile(selection[0]);
       const report = JSON.parse(Buffer.from(text).toString("utf-8"));
-      if (report?.aid && report?.tid && report.data?.assessmentVersion) {
+      const data = extractAuditReport(report);
+      if (data !== undefined) {
         const uri = editor.document.uri.toString();
-        const audit = await parseAuditReport(cache, editor.document, report.data, {
+        const audit = await parseAuditReport(cache, editor.document, data, {
           value: { uri, hash: "" },
           children: {},
         });
-        updateAuditContext(auditContext, uri, audit);
-        updateDecorations(auditContext.decorations, audit.summary.documentUri, audit.issues);
-        updateDiagnostics(auditContext.diagnostics, audit.filename, audit.issues);
+        const tempAuditDirectory = await saveAuditReportToTempDirectory(report);
+        setAudit(auditContext, uri, audit, tempAuditDirectory);
         setDecorations(editor, auditContext);
-        reportWebView.show(audit);
+        await reportWebView.showReport(audit);
       } else {
         vscode.window.showErrorMessage(
           "Can't find 42Crunch Security Audit report in the selected file"
@@ -73,3 +85,12 @@ export default (
     }
   },
 });
+
+function extractAuditReport(report: any) {
+  if (report?.aid && report?.tid && report?.data?.assessmentVersion) {
+    return report.data;
+  } else if (report?.taskId && report?.report) {
+    return report.report;
+  }
+  return undefined;
+}

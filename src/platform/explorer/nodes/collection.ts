@@ -53,7 +53,7 @@ export class CollectionNode extends AbstractExplorerNode {
     super(
       parent,
       `${parent.id}-${collection.desc.id}`,
-      collection.desc.name,
+      getCollectionTitle(store, collection.desc),
       collection.summary.apis === 0
         ? vscode.TreeItemCollapsibleState.None
         : vscode.TreeItemCollapsibleState.Collapsed
@@ -82,6 +82,10 @@ export class CollectionNode extends AbstractExplorerNode {
   public getCollectionId(): string {
     return this.collection.desc.id;
   }
+
+  public getCollectionTechnicalName(): string {
+    return this.collection.desc.technicalName;
+  }
 }
 
 export class FilteredApiNode extends AbstractExplorerNode {
@@ -94,4 +98,8 @@ export class FilteredApiNode extends AbstractExplorerNode {
   getCollectionId() {
     return this.parent.getCollectionId();
   }
+}
+
+function getCollectionTitle(store: PlatformStore, desc: any): string {
+  return desc.name;
 }

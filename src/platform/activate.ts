@@ -4,11 +4,11 @@
 */
 
 import * as vscode from "vscode";
-import { Preferences } from "@xliic/common/messages/prefs";
+import { Preferences } from "@xliic/common/prefs";
 import { Cache } from "../cache";
-import { Configuration, configuration } from "../configuration";
+import { Configuration } from "../configuration";
 import { CollectionsProvider } from "./explorer/provider";
-import { PlatformContext, platformUriScheme } from "./types";
+import { Logger, PlatformContext, platformUriScheme } from "./types";
 import { AuditContext } from "../types";
 import { registerCommands } from "./commands";
 import { PlatformStore } from "./stores/platform-store";
@@ -16,25 +16,31 @@ import { FavoritesStore } from "./stores/favorites-store";
 import { ImportedUrlStore } from "./stores/imported-url-store";
 import { PlatformFS } from "./fs-provider";
 import { isPlatformUri } from "./util";
-import { CodelensProvider } from "./codelens";
+import { CodelensProvider, PlatformTagCodelensProvider } from "./codelens";
 import { refreshAuditReport } from "./audit";
-import { AuditReportWebView } from "../audit/report";
+import { AuditWebView } from "../audit/view";
 import { DataDictionaryWebView } from "./data-dictionary/view";
 import { DataDictionaryCompletionProvider } from "./data-dictionary/completion";
 import { DataDictionaryCodeActions } from "./data-dictionary/code-actions";
 import { activate as activateLinter } from "./data-dictionary/linter";
 import { activate as activateScan } from "./scan/activate";
+import { EnvStore } from "../envstore";
+import { SignUpWebView } from "../webapps/signup/view";
+import { TagsWebView } from "../webapps/views/tags/view";
 
 export async function activate(
   context: vscode.ExtensionContext,
   auditContext: AuditContext,
   cache: Cache,
   configuration: Configuration,
-  store: PlatformStore,
-  reportWebView: AuditReportWebView,
-  memento: vscode.Memento,
   secrets: vscode.SecretStorage,
-  prefs: Record<string, Preferences>
+  store: PlatformStore,
+  signUpWebView: SignUpWebView,
+  reportWebView: AuditWebView,
+  memento: vscode.Memento,
+  envStore: EnvStore,
+  prefs: Record<string, Preferences>,
+  logger: Logger
 ) {
   const dataDictionaryView = new DataDictionaryWebView(context.extensionPath);
 
@@ -60,11 +66,11 @@ export async function activate(
     treeDataProvider: provider,
   });
 
-  store.onConnectionDidChange(({ connected }) =>
+  store.onConnectionDidChange(({ credentials }) =>
     vscode.commands.executeCommand(
       "setContext",
       "openapi.platform.credentials",
-      connected ? "present" : "missing"
+      credentials ? "present" : "missing"
     )
   );
 
@@ -94,7 +100,19 @@ export async function activate(
     });
   }
 
-  activateScan(context, platformContext, cache, configuration, store, memento, secrets, prefs);
+  activateScan(
+    context,
+    platformContext,
+    cache,
+    configuration,
+    secrets,
+    store,
+    envStore,
+    prefs,
+    signUpWebView,
+    reportWebView,
+    auditContext
+  );
   activateLinter(cache, platformContext, store, dataDictionaryDiagnostics);
 
   const disposable1 = vscode.workspace.onDidSaveTextDocument((document) =>
@@ -113,10 +131,20 @@ export async function activate(
     }
   });
 
+  const tagsWebView = new TagsWebView(
+    context.extensionPath,
+    memento,
+    configuration,
+    secrets,
+    store,
+    logger
+  );
+
   registerCommands(
     context,
     platformContext,
     auditContext,
+    secrets,
     store,
     favoriteCollections,
     importedUrls,
@@ -124,6 +152,8 @@ export async function activate(
     provider,
     tree,
     reportWebView,
+    tagsWebView,
+    signUpWebView,
     dataDictionaryView,
     dataDictionaryDiagnostics
   );
@@ -134,5 +164,12 @@ export async function activate(
       { scheme: platformUriScheme, language: "jsonc" },
     ],
     new CodelensProvider(store)
+  );
+
+  Object.values(selectors).map((selector) =>
+    vscode.languages.registerCodeLensProvider(
+      selector,
+      new PlatformTagCodelensProvider(cache, configuration, secrets, memento)
+    )
   );
 }

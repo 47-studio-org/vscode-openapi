@@ -14,6 +14,7 @@ export const ThemeColorNames = [
   "inputBackground",
   "inputForeground",
   "inputBorder",
+  "inputPlaceholderForeground",
   "tabBorder",
   "tabActiveBackground",
   "tabActiveForeground",
@@ -28,16 +29,25 @@ export const ThemeColorNames = [
   "errorForeground",
   "errorBackground",
   "errorBorder",
-  "sidebarBackground",
   "listActiveSelectionBackground",
   "listActiveSelectionForeground",
   "listHoverBackground",
   "contrastActiveBorder",
+  "linkForeground",
+  "linkActiveForeground",
+  "computedOne",
+  "computedTwo",
+  "badgeForeground",
+  "badgeBackground",
+  "notificationsForeground",
+  "notificationsBackground",
+  "notificationsBorder",
+  "fontSize",
 ] as const;
 
-export type ThemeColorName = typeof ThemeColorNames[number];
+export type ThemeColorName = (typeof ThemeColorNames)[number];
 
-export type ThemeColorValues = Record<ThemeColorName, string>;
+export type ThemeColorValues = Partial<Record<ThemeColorName, string>>;
 
 export const ThemeColorVariables: ThemeColorValues = {
   foreground: "--xliic-foreground",
@@ -55,6 +65,7 @@ export const ThemeColorVariables: ThemeColorValues = {
   inputBackground: "--xliic-inputBackground",
   inputForeground: "--xliic-inputForeground",
   inputBorder: "--xliic-inputBorder",
+  inputPlaceholderForeground: "--xliic-inputPlaceholderForeground",
   tabBorder: "--xliic-tabBorder",
   tabActiveBackground: "--xliic-tabActiveBackground",
   tabActiveForeground: "--xliic-tabActiveForeground",
@@ -69,11 +80,27 @@ export const ThemeColorVariables: ThemeColorValues = {
   errorForeground: "--xliic-errorForeground",
   errorBackground: "--xliic-errorBackground",
   errorBorder: "--xliic-errorBorder",
-  sidebarBackground: "--xliic-sidebarBackground",
   listActiveSelectionBackground: "--xliic-listActiveSelectionBackground",
   listActiveSelectionForeground: "--xliic-listActiveSelectionForeground",
   listHoverBackground: "--xliic-listHoverBackground",
   contrastActiveBorder: "--xliic-contrastActiveBorder",
+  linkForeground: "--xliic-linkForeground",
+  linkActiveForeground: "--xliic-linkActiveForeground",
+  computedOne: "--xliic-computedOne",
+  computedTwo: "--xliic-computedTwo",
+  badgeForeground: "--xliic-badgeForeground",
+  badgeBackground: "--xliic-badgeBackground",
+  notificationsForeground: "--xliic-notificationsForeground",
+  notificationsBackground: "--xliic-notificationsBackground",
+  notificationsBorder: "--xliic-notificationsBorder",
+  fontSize: "--xliic-fontSize",
 } as const;
 
 export type VsCodeColorMap = ThemeColorValues;
+
+export type ChangeThemePayload = {
+  kind: "light" | "dark" | "highContrast" | "highContrastLight";
+  theme?: ThemeColorValues;
+};
+
+export type ChangeThemeMessage = { command: "changeTheme"; payload: ChangeThemePayload };

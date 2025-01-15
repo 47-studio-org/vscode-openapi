@@ -51,7 +51,7 @@ class Throttle {
 }
 
 class ExpiringCache<K, T> implements vscode.Disposable {
-  private expireTimer: NodeJS.Timer;
+  private expireTimer: NodeJS.Timeout;
   private entries = new Map<K, { timestamp: number; value: T }>();
 
   constructor(private interval: number, private maxAge: number) {
@@ -187,9 +187,12 @@ class BundledDocumentCache implements vscode.Disposable {
     this.cache = new ExpiringCache<string, BundledDocument>(interval, maxAge);
   }
 
-  async get(document: vscode.TextDocument): Promise<BundleResult | undefined> {
+  async get(
+    document: vscode.TextDocument,
+    options?: { rebundle?: boolean }
+  ): Promise<BundleResult | undefined> {
     const cached = this.cache.get(document.uri.toString());
-    if (cached) {
+    if (cached && !options?.rebundle) {
       return cached.bundle;
     }
     const bundle = await this.bundle(document);
@@ -330,8 +333,11 @@ export class Cache implements vscode.Disposable {
     return this.parsedDocuments.get(document).lastGoodParsed;
   }
 
-  async getDocumentBundle(document: vscode.TextDocument): Promise<BundleResult | undefined> {
-    return this.bundledDocuments.get(document);
+  async getDocumentBundle(
+    document: vscode.TextDocument,
+    options?: { rebundle?: boolean }
+  ): Promise<BundleResult | undefined> {
+    return this.bundledDocuments.get(document, options);
   }
 
   dispose() {

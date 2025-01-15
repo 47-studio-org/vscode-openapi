@@ -1,6 +1,9 @@
 import { Parsed, Path } from "@xliic/preserving-json-yaml-parser";
 import * as vscode from "vscode";
+import { Audit, Issue } from "@xliic/common/audit";
+
 import { JsonNodeValue } from "./json-utils";
+import { DataDictionaryFormat } from "./platform/stores/platform-store";
 
 export const configId = "openapi";
 export const extensionQualifiedId = "42Crunch.vscode-openapi";
@@ -47,42 +50,8 @@ export interface BundlingFailure {
 }
 export type BundleResult = Bundle | BundlingFailure;
 
-interface Grade {
-  value: number;
-  max: number;
-}
-
-export interface Grades {
-  datavalidation: Grade;
-  security: Grade;
-  oasconformance: Grade;
-  all: number;
-  errors: boolean;
-  invalid: boolean;
-}
-
-export interface ReportedIssue {
-  id: string;
-  description: string;
-  pointer: string;
-  score: number;
-  displayScore: string;
-  criticality: number;
-}
-
-export interface Issue extends ReportedIssue {
-  lineNo: number;
-  range: vscode.Range;
-  documentUri: string;
-}
-
 export interface IssuesByDocument {
   [uri: string]: Issue[];
-}
-
-export interface Summary extends Grades {
-  documentUri: string;
-  subdocumentUris: string[];
 }
 
 export interface DocumentDecorations {
@@ -97,22 +66,12 @@ export interface PendingAudits {
   [uri: string]: boolean;
 }
 
-export interface Audit {
-  filename: string;
-  files: {
-    [uri: string]: {
-      relative: string;
-    };
-  };
-  summary: Summary;
-  issues: IssuesByDocument;
-}
-
 export interface AuditContext {
   auditsByMainDocument: DocumentAudits;
   auditsByDocument: DocumentAudits;
   decorations: DocumentDecorations;
   diagnostics: vscode.DiagnosticCollection;
+  auditTempDirectories: Record<string, string>;
 }
 
 export interface AuditDiagnostic extends vscode.Diagnostic {
@@ -179,7 +138,8 @@ export interface FixParameterSource {
     parameter: FixParameter,
     version: OpenApiVersion,
     bundle: BundleResult,
-    document: vscode.TextDocument
+    document: vscode.TextDocument,
+    formatMap?: Map<string, DataDictionaryFormat>
   ): any[];
 }
 
@@ -200,6 +160,10 @@ export interface FixContext {
   anchor?: JsonNodeValue;
   document: vscode.TextDocument;
   dropBrackets?: number[];
+  formatMap?: Map<string, DataDictionaryFormat>;
+  rangesToRemove?: vscode.Range[];
+  positionsToInsert?: [string, vscode.Position][];
+  pointersToRemove?: Set<string>;
 }
 
 export interface FixSnippetParameters {

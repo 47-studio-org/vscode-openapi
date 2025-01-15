@@ -102,7 +102,13 @@ function lint(
       text: string | undefined,
       location: Location | undefined
     ): void {
-      if (key === "format" && typeof value === "string") {
+      if (
+        key === "format" &&
+        typeof value === "string" &&
+        !path.includes("example") &&
+        !path.includes("examples") &&
+        !path.includes("x-42c-sample")
+      ) {
         diagnostics.push(
           ...checkFormat(
             document,
@@ -175,7 +181,7 @@ function checkFormat(
           id: "data-dictionary-format-property-mismatch",
           message: `Data Dictionary requires value of '${formatId}'`,
           range,
-          severity: vscode.DiagnosticSeverity.Error,
+          severity: vscode.DiagnosticSeverity.Warning,
           source: "vscode-openapi",
           path,
           node: container,
@@ -205,17 +211,24 @@ function checkFormat(
   }
 
   for (const prop of schemaProps) {
+    // regardless of the format, if object already has 'example' or 'x-42c-sample'
+    // dont report missing property or a mismatch
+    if (prop === "example") {
+      if (container.hasOwnProperty("example") || container.hasOwnProperty("x-42c-sample")) {
+        continue;
+      }
+    }
     if (dataFormat.hasOwnProperty(prop)) {
       if (container.hasOwnProperty(prop)) {
         // properties differ
-        if (container[prop] !== (dataFormat as any)[prop]) {
+        if (isPropertyMismatch(prop, container[prop], (dataFormat as any)[prop])) {
           const range = getValueRange(document, container, prop);
           if (range !== undefined) {
             const diagnostic: DataDictionaryDiagnostic = {
               id: "data-dictionary-format-property-mismatch",
               message: `Data Dictionary requires value of '${(dataFormat as any)[prop]}'`,
               range,
-              severity: vscode.DiagnosticSeverity.Error,
+              severity: vscode.DiagnosticSeverity.Warning,
               source: "vscode-openapi",
               path,
               node: container,
@@ -249,6 +262,21 @@ function checkFormat(
   return diagnostics;
 }
 
+function isPropertyMismatch(name: string, formatValue: unknown[], currentValue: unknown): boolean {
+  if (name === "enum" && Array.isArray(currentValue)) {
+    if (currentValue.length !== formatValue.length) {
+      return true;
+    }
+    for (const element of currentValue) {
+      if (!formatValue.includes(element)) {
+        return true;
+      }
+    }
+    return false;
+  }
+  return currentValue !== formatValue;
+}
+
 function getValueRange(
   document: vscode.TextDocument,
   container: any,
@@ -269,10 +297,19 @@ function getParentKeyRange(
   path: Path
 ): vscode.Range | undefined {
   const location = findLocationForPath(root, path);
-  if (location !== undefined && location.key !== undefined) {
-    return new vscode.Range(
-      document.positionAt(location.key.start),
-      document.positionAt(location.key.end)
-    );
+  if (location !== undefined) {
+    if (location.key !== undefined) {
+      return new vscode.Range(
+        document.positionAt(location.key.start),
+        document.positionAt(location.key.end)
+      );
+    } else {
+      // if no key range is available, lets take the first line of the value
+      const line = document.lineAt(document.positionAt(location.value.start));
+      return new vscode.Range(
+        new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex),
+        line.range.end
+      );
+    }
   }
 }

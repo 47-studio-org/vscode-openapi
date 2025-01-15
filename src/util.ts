@@ -10,7 +10,7 @@ import {
   FixSnippetParameters,
 } from "./types";
 import parameterSources from "./audit/quickfix-sources";
-import { parse, Parsed } from "@xliic/preserving-json-yaml-parser";
+import { parse, Parsed, simpleClone } from "@xliic/preserving-json-yaml-parser";
 import { findJsonNodeValue, getRootAsJsonNodeValue, JsonNodeValue, replace } from "./json-utils";
 import { componentsTags, topTags } from "./audit/quickfix";
 
@@ -46,7 +46,7 @@ export class DocumentIndent {
 
 function getBasicIndent(document: vscode.TextDocument, root: Parsed): DocumentIndent {
   const children = getRootAsJsonNodeValue(root).getChildren();
-  if (document.languageId === "json") {
+  if (document.languageId === "json" || document.languageId === "jsonc") {
     if (children.length > 0) {
       const position = document.positionAt(children[0].getRange(root)[0]);
       const index = document.lineAt(position.line).firstNonWhitespaceCharacterIndex;
@@ -144,65 +144,90 @@ export function renameKeyNode(context: FixContext): vscode.Range {
 }
 
 export function deleteJsonNode(context: FixContext): vscode.Range {
+  const root = context.root;
   const document = context.document;
   const target = context.target;
-  let startPosition: vscode.Position;
-  const prevTarget = target.prev(context.root);
-
-  if (prevTarget) {
-    const [, end] = prevTarget.getRange(context.root);
-    const line = getLineByOffset(document, end);
-    const nextTarget = target.next(context.root);
-    startPosition = new vscode.Position(line.lineNumber, line.text.length + (nextTarget ? 0 : -1));
+  const prev = target.prev(root);
+  const next = target.next(root);
+  const parent = target.getParent(root);
+  let startPos: vscode.Position;
+  if (prev) {
+    const [, end] = prev.getRange(root);
+    let hasNext = next !== undefined;
+    const pointers = context.pointersToRemove;
+    if (hasNext && pointers && pointers.size > 0) {
+      hasNext = hasNextTarget(parent, target, pointers);
+    }
+    if (hasNext) {
+      const [toOffset] = target.getRange(root);
+      startPos = getPosAfterComma(document, end, toOffset);
+    } else {
+      startPos = document.positionAt(end);
+    }
   } else {
-    const parent = target.getParent(context.root);
-    const [start] = parent.getRange(context.root);
-    const line = getLineByOffset(document, start);
-    startPosition = new vscode.Position(line.lineNumber, line.text.length);
+    const [start] = parent.getValueRange(root);
+    startPos = document.positionAt(start + 1);
   }
+  let toOffset: number;
+  const [, end] = target.getRange(root);
+  if (next) {
+    const [start] = next.getRange(root);
+    toOffset = start;
+  } else {
+    const [, end] = parent.getRange(root);
+    toOffset = end;
+  }
+  const endPos = getPosAfterComma(document, end, toOffset);
+  return new vscode.Range(startPos, endPos);
+}
 
-  const [, end] = target.getRange(context.root);
-  const line = getLineByOffset(document, end);
-  const endPosition = new vscode.Position(line.lineNumber, line.text.length);
+function getPosAfterComma(
+  document: vscode.TextDocument,
+  fromOffset: number,
+  toOffset: number
+): vscode.Position {
+  const fromPos = document.positionAt(fromOffset);
+  const toPos = document.positionAt(toOffset);
+  const text = document.getText(new vscode.Range(fromPos, toPos));
+  return document.positionAt(fromOffset + text.indexOf(",") + 1);
+}
 
-  return new vscode.Range(startPosition, endPosition);
+function hasNextTarget(parent: any, target: any, pointersToRemove: Set<string>): boolean {
+  const pointers = [];
+  for (const child of parent.getChildren()) {
+    const pointer = child.pointer;
+    if (!pointersToRemove.has(pointer) || target.pointer === pointer) {
+      pointers.push(pointer);
+    }
+  }
+  return pointers.indexOf(target.pointer) !== pointers.length - 1;
 }
 
 export function deleteYamlNode(context: FixContext): vscode.Range {
+  const root = context.root;
   const document = context.document;
   const target = context.target;
-  const [start, end] = target.getRange(context.root);
-
-  let apply = false;
-  let startPosition = document.positionAt(start);
-  let endPosition = document.positionAt(end);
-  const parent = target.getParent(context.root);
-
-  if (parent.isArray()) {
-    const nextTarget = target.next(context.root);
-    if (nextTarget) {
-      const line = getLineByOffset(document, nextTarget.getRange(context.root)[0]);
-      startPosition = document.positionAt(start - "- ".length);
-      endPosition = new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex);
-    } else {
-      startPosition = new vscode.Position(getLineByOffset(document, start).lineNumber, 0);
-      endPosition = new vscode.Position(getLineByOffset(document, end).lineNumber + 1, 0);
+  const [start, end] = target.getRange(root);
+  let startPos = document.positionAt(start);
+  let endPos = document.positionAt(end);
+  const parent = target.getParent(root);
+  const children = parent.getChildren();
+  const insertEmptyStub = children.length === 1 && children[0].value === target.value;
+  const isArray = parent.isArray();
+  const isObject = parent.isObject();
+  if (isArray || isObject) {
+    startPos = new vscode.Position(getLineByOffset(document, start).lineNumber, 0);
+    endPos = new vscode.Position(getLineByOffset(document, end).lineNumber + 1, 0);
+    if (insertEmptyStub) {
+      if (!context["positionsToInsert"]) {
+        context["positionsToInsert"] = [];
+      }
+      const [, end] = parent.getKeyRange(root);
+      const line = getLineByOffset(document, end);
+      const insPos = new vscode.Position(line.lineNumber, line.text.indexOf(":") + 1);
+      context["positionsToInsert"].push([insPos, isObject ? " {}" : " []"]);
     }
-    apply = true;
-  } else if (parent.isObject()) {
-    const nextTarget = target.next(context.root);
-    if (nextTarget) {
-      const line = getLineByOffset(document, nextTarget.getRange(context.root)[0]);
-      endPosition = new vscode.Position(line.lineNumber, line.firstNonWhitespaceCharacterIndex);
-    } else {
-      startPosition = new vscode.Position(getLineByOffset(document, start).lineNumber, 0);
-      endPosition = new vscode.Position(getLineByOffset(document, end).lineNumber + 1, 0);
-    }
-    apply = true;
-  }
-
-  if (apply) {
-    return new vscode.Range(startPosition, endPosition);
+    return new vscode.Range(startPos, endPos);
   }
 }
 
@@ -424,7 +449,7 @@ export function getFixAsYamlString(context: FixContext): string {
 
 function handleParameters(context: FixContext, text: string): string {
   const replacements = [];
-  const { issues, fix, version, bundle, document, snippet } = context;
+  const { issues, fix, version, bundle, document, snippet, formatMap } = context;
   const languageId = context.document.languageId;
 
   const root = safeParse(text, languageId);
@@ -448,7 +473,21 @@ function handleParameters(context: FixContext, text: string): string {
     if (parameter.source && parameterSources[parameter.source]) {
       const source = parameterSources[parameter.source];
       const issue = parameter.fixIndex ? issues[parameter.fixIndex] : issues[0];
-      cacheValues = source(issue, fix, parameter, version, bundle, document);
+      cacheValues = source(issue, fix, parameter, version, bundle, document, formatMap);
+      if (cacheValues && (document.languageId === "json" || document.languageId === "jsonc")) {
+        const safeValues = [];
+        cacheValues.forEach((value: any) => {
+          let safeValue = value;
+          if (typeof safeValue === "string") {
+            safeValue = escapeJson(safeValue);
+            if (context.snippet) {
+              safeValue = escapeJson(safeValue);
+            }
+          }
+          safeValues.push(safeValue);
+        });
+        cacheValues = safeValues;
+      }
     }
 
     let finalValue: string;
@@ -551,4 +590,11 @@ function getAnchor(context: FixContext): JsonNodeValue | undefined {
     }
   }
   return undefined;
+}
+
+function escapeJson(jsonText: string): string {
+  // JSON.stringify("abc") returns '"abc"'
+  // JSON.stringify("(^[\\w\\s\\.]{5,50}$)") returns '"(^[\\\\w\\\\s\\\\.]{5,50}$)"'
+  const res = JSON.stringify(jsonText);
+  return res.substring(1, res.length - 1);
 }

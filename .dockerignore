@@ -1,0 +1,9 @@
+**/node_modules
+.git
+out
+.vscode-test
+.DS_Store
+webview/generated
+src/generated/*.json
+schema/generated/*.json
+**/tsconfig.tsbuildinfo

@@ -1,42 +1,48 @@
 import * as vscode from "vscode";
 import { Cache } from "../cache";
-import { BundledOpenApiSpec, getOperations, OasOperation } from "@xliic/common/oas30";
-import { deref } from "@xliic/common/jsonpointer";
+import { OpenApi30, Swagger, BundledSwaggerOrOasSpec, isOpenapi, deref } from "@xliic/openapi";
 import { getLocation } from "@xliic/preserving-json-yaml-parser";
 import { getOpenApiVersion } from "../parsers";
 import { OpenApiVersion } from "../types";
 
 export class TryItCodelensProvider implements vscode.CodeLensProvider {
-  onDidChangeCodeLenses?: vscode.Event<void>;
+  private lenses: Record<string, vscode.CodeLens[]> = {};
+
   constructor(private cache: Cache) {}
 
   async provideCodeLenses(
     document: vscode.TextDocument,
     token: vscode.CancellationToken
   ): Promise<vscode.CodeLens[]> {
-    const result: vscode.CodeLens[] = [];
     const parsed = this.cache.getParsedDocument(document);
     const version = getOpenApiVersion(parsed);
-    // TODO support Swagger 2.0
-    if (parsed && version === OpenApiVersion.V3) {
-      const oas = parsed as unknown as BundledOpenApiSpec;
-      const operations = getOperations(oas);
+    if (parsed && version !== OpenApiVersion.Unknown) {
+      const result: vscode.CodeLens[] = [];
+      const oas = parsed as unknown as BundledSwaggerOrOasSpec;
+      const operations = isOpenapi(oas) ? OpenApi30.getOperations(oas) : Swagger.getOperations(oas);
       for (const [path, method, operation] of operations) {
         const tryOperationLens = operationLens(document, oas, path, method);
         if (tryOperationLens) {
           result.push(tryOperationLens);
         }
-        result.push(...operationExamplesLens(document, oas, path, method, operation));
+        // TODO examples in swagger
+        if (isOpenapi(oas)) {
+          result.push(
+            ...operationExamplesLens(document, oas, path, method, operation as OpenApi30.Operation)
+          );
+        }
       }
+
+      this.lenses[document.uri.toString()] = result;
     }
 
-    return result;
+    return this.lenses[document.uri.toString()];
   }
 }
 
 function operationLens(
   document: vscode.TextDocument,
-  oas: BundledOpenApiSpec,
+  oas: BundledSwaggerOrOasSpec,
   path: string,
   method: string
 ): vscode.CodeLens | undefined {
@@ -54,16 +60,16 @@ function operationLens(
     title: `Try it`,
     tooltip: "Try this operation by sending a request",
     command: "openapi.tryOperation",
-    arguments: [document.uri, path, method],
+    arguments: [document, path, method],
   });
 }
 
 function operationExamplesLens(
   document: vscode.TextDocument,
-  oas: BundledOpenApiSpec,
+  oas: OpenApi30.BundledSpec,
   path: string,
   method: string,
-  operation: OasOperation
+  operation: OpenApi30.Operation
 ): vscode.CodeLens[] {
   const result = [];
   const content = deref(oas, operation.requestBody)?.content;
@@ -86,7 +92,7 @@ function operationExamplesLens(
               tooltip:
                 "Try this operation by sending a request, use this example for the request body",
               command: "openapi.tryOperationWithExample",
-              arguments: [document.uri, path, method, mediaType, example.value],
+              arguments: [document, path, method, mediaType, example.value],
             })
           );
         }

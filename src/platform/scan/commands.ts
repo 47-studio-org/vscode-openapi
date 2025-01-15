@@ -4,19 +4,45 @@
 */
 
 import * as vscode from "vscode";
-import { PlatformContext } from "../types";
-import { parseJsonPointer, Path, simpleClone, stringify } from "@xliic/preserving-json-yaml-parser";
+
+import { HttpMethod } from "@xliic/openapi";
+import { stringify } from "@xliic/preserving-json-yaml-parser";
+import { BundledSwaggerOrOasSpec } from "@xliic/openapi";
+
 import { Cache } from "../../cache";
+import { Configuration, configuration } from "../../configuration";
+import { ensureHasCredentials } from "../../credentials";
+import { OperationIdNode } from "../../outlines/nodes/operation-ids";
+import { OperationNode } from "../../outlines/nodes/paths";
+import { TagChildNode } from "../../outlines/nodes/tags";
+import { getPathAndMethod } from "../../outlines/util";
+import {
+  createScanConfigWithCliBinary,
+  ensureCliDownloaded,
+  runAuditWithCliBinary,
+} from "../cli-ast";
 import { PlatformStore } from "../stores/platform-store";
-import { HttpMethod } from "@xliic/common/http";
-import { BundledOpenApiSpec } from "@xliic/common/oas30";
+import { Logger, PlatformContext } from "../types";
+import { getOrCreateScanconfUri, getScanconfUri } from "./config";
+import { createScanConfigWithPlatform } from "./runtime/platform";
 import { ScanWebView } from "./view";
+import { formatException } from "../util";
+import { loadConfig } from "../../util/config";
+import { Bundle, OpenApiVersion } from "../../types";
+import { SignUpWebView } from "../../webapps/signup/view";
+import { getOpenApiVersion } from "../../parsers";
+import { ScanReportWebView } from "./report-view";
+import { existsUri } from "../../util/fs";
 
 export default (
   cache: Cache,
   platformContext: PlatformContext,
   store: PlatformStore,
-  view: ScanWebView
+  configuration: Configuration,
+  secrets: vscode.SecretStorage,
+  getScanView: (uri: vscode.Uri) => ScanWebView,
+  getExistingReportView: (uri: vscode.Uri) => ScanReportWebView,
+  signUpWebView: SignUpWebView
 ) => {
   vscode.commands.registerTextEditorCommand(
     "openapi.platform.editorRunSingleOperationScan",
@@ -28,173 +54,270 @@ export default (
       method: HttpMethod
     ): Promise<void> => {
       try {
-        await editorRunSingleOperationScan(editor, edit, cache, store, view, uri, path, method);
+        await editorRunSingleOperationScan(
+          signUpWebView,
+          editor,
+          cache,
+          store,
+          configuration,
+          secrets,
+          getScanView,
+          path,
+          method
+        );
       } catch (ex: any) {
-        if (
-          ex?.response?.statusCode === 409 &&
-          ex?.response?.body?.code === 109 &&
-          ex?.response?.body?.message === "limit reached"
-        ) {
-          vscode.window.showErrorMessage(
-            "You have reached your maximum number of APIs. Please contact support@42crunch.com to upgrade your account."
-          );
-        } else {
-          vscode.window.showErrorMessage("Failed to scan: " + ex.message);
+        vscode.window.showErrorMessage(formatException("Failed to scan:", ex));
+      }
+    }
+  );
+
+  vscode.commands.registerCommand(
+    "openapi.outlineSingleOperationScan",
+    async (node: OperationNode | TagChildNode | OperationIdNode): Promise<void> => {
+      if (!vscode.window.activeTextEditor) {
+        vscode.window.showErrorMessage("No active editor");
+        return;
+      }
+
+      const { path, method } = getPathAndMethod(node);
+
+      try {
+        await editorRunSingleOperationScan(
+          signUpWebView,
+          vscode.window.activeTextEditor,
+          cache,
+          store,
+          configuration,
+          secrets,
+          getScanView,
+          path,
+          method
+        );
+      } catch (ex: any) {
+        vscode.window.showErrorMessage(formatException("Failed to scan:", ex));
+      }
+    }
+  );
+
+  vscode.commands.registerTextEditorCommand(
+    "openapi.platform.editorRunFirstOperationScan",
+    async (editor: vscode.TextEditor, edit: vscode.TextEditorEdit): Promise<void> => {
+      const parsed = cache.getParsedDocument(editor.document);
+      const version = getOpenApiVersion(parsed);
+      if (parsed && version !== OpenApiVersion.Unknown) {
+        const oas = parsed as unknown as BundledSwaggerOrOasSpec;
+
+        const firstPath = Object.keys(oas.paths)[0];
+        if (firstPath === undefined) {
+          return undefined;
         }
+
+        const firstMethod = Object.keys(oas.paths[firstPath])[0];
+        if (firstMethod === undefined) {
+          return undefined;
+        }
+
+        try {
+          await editorRunSingleOperationScan(
+            signUpWebView,
+            editor,
+            cache,
+            store,
+            configuration,
+            secrets,
+            getScanView,
+            firstPath,
+            firstMethod as HttpMethod
+          );
+        } catch (ex: any) {
+          vscode.window.showErrorMessage(formatException("Failed to scan:", ex));
+        }
+      }
+    }
+  );
+
+  vscode.commands.registerTextEditorCommand(
+    "openapi.platform.editorOpenScanconfig",
+    async (editor: vscode.TextEditor, edit: vscode.TextEditorEdit): Promise<void> => {
+      await editorOpenScanconfig(editor);
+    }
+  );
+
+  vscode.commands.registerTextEditorCommand(
+    "openapi.platform.exportScanReport",
+    async (editor: vscode.TextEditor, edit: vscode.TextEditorEdit): Promise<void> => {
+      const view = getExistingReportView(editor.document.uri);
+      if (view === undefined) {
+        vscode.window.showErrorMessage("No scan report found for the current document.");
+        return;
+      }
+
+      const destination = await vscode.window.showSaveDialog({
+        filters: { JSON: ["json"] },
+      });
+
+      if (destination !== undefined) {
+        await view.exportReport(destination);
       }
     }
   );
 };
 
 async function editorRunSingleOperationScan(
+  signUpView: SignUpWebView,
   editor: vscode.TextEditor,
-  edit: vscode.TextEditorEdit,
   cache: Cache,
   store: PlatformStore,
-  view: ScanWebView,
-  uri: string,
+  configuration: Configuration,
+  secrets: vscode.SecretStorage,
+  getScanView: (uri: vscode.Uri) => ScanWebView,
   path: string,
   method: HttpMethod
 ): Promise<void> {
-  const bundle = await cache.getDocumentBundle(editor.document);
-  if (bundle && !("errors" in bundle)) {
-    //const oas = extractSingleOperation(method as HttpMethod, path as string, bundle.value);
-    // extracting the entire path here, 'cause scan will generate requests
-    // for all possible HTTP Verbs and test the responses against the OAS
-    const oas = extractSinglePath(path as string, bundle.value);
-    const rawOas = stringify(oas);
-
-    const api = await store.createTempApi(rawOas);
-
-    const audit = await store.getAuditReport(api.desc.id);
-    if (audit?.openapiState !== "valid") {
-      await store.deleteApi(api.desc.id);
-      throw new Error(
-        "OpenAPI has failed Security Audit. Please run API Security Audit, fix the issues and try running the Scan again."
-      );
-    }
-
-    await store.createDefaultScanConfig(api.desc.id);
-
-    const configs = await store.getScanConfigs(api.desc.id);
-
-    const c = await store.readScanConfig(configs[0].scanConfigurationId);
-
-    const config = JSON.parse(Buffer.from(c.scanConfiguration, "base64").toString("utf-8"));
-
-    await store.deleteApi(api.desc.id);
-
-    if (config !== undefined) {
-      await view.show();
-      view.sendScanOperation(editor.document, {
-        oas: oas as BundledOpenApiSpec,
-        rawOas: rawOas,
-        path: path as string,
-        method: method as HttpMethod,
-        config,
-      });
-    }
-  }
-}
-
-function extractSingleOperation(method: HttpMethod, path: string, oas: any): BundledOpenApiSpec {
-  const visited = new Set<string>();
-  crawl(oas, oas["paths"][path][method], visited);
-  if (oas["paths"][path]["parameters"]) {
-    crawl(oas, oas["paths"][path]["parameters"], visited);
-  }
-  const cloned: any = simpleClone(oas);
-  delete cloned["paths"];
-  delete cloned["components"];
-  // copy single path and path parameters
-  cloned["paths"] = { [path]: { [method]: oas["paths"][path][method] } };
-  if (oas["paths"][path]["parameters"]) {
-    cloned["paths"][path]["parameters"] = oas["paths"][path]["parameters"];
-  }
-  // copy security schemes
-  if (oas?.["components"]?.["securitySchemes"]) {
-    cloned["components"] = { securitySchemes: oas["components"]["securitySchemes"] };
-  }
-  copyByPointer(oas, cloned, Array.from(visited));
-  return cloned as BundledOpenApiSpec;
-}
-
-function extractSinglePath(path: string, oas: any): BundledOpenApiSpec {
-  const visited = new Set<string>();
-  crawl(oas, oas["paths"][path], visited);
-  if (oas["paths"][path]["parameters"]) {
-    crawl(oas, oas["paths"][path]["parameters"], visited);
-  }
-  const cloned: any = simpleClone(oas);
-  delete cloned["paths"];
-  delete cloned["components"];
-  // copy single path and path parameters
-  cloned["paths"] = { [path]: oas["paths"][path] };
-
-  // copy security schemes
-  if (oas?.["components"]?.["securitySchemes"]) {
-    cloned["components"] = { securitySchemes: oas["components"]["securitySchemes"] };
-  }
-  copyByPointer(oas, cloned, Array.from(visited));
-  return cloned as BundledOpenApiSpec;
-}
-
-function crawl(root: any, current: any, visited: Set<string>) {
-  if (typeof current !== "object") {
+  if (!(await ensureHasCredentials(signUpView, configuration, secrets))) {
     return;
   }
 
-  for (const [key, value] of Object.entries(current)) {
-    if (key === "$ref") {
-      const path = (<string>value).substring(1, (<string>value).length);
-      if (!visited.has(path)) {
-        visited.add(path);
-        const ref = resolveRef(root, path);
-        crawl(root, ref, visited);
+  // run single operation scan creates the scan config and displays the scan view
+  // actual execution of the scan triggered from the scan view
+
+  const config = await loadConfig(configuration, secrets);
+
+  // free users and platform users who chose to use CLI for scan must have CLI available
+  if (
+    (config.platformAuthType === "anond-token" ||
+      (config.platformAuthType === "api-token" && config.scanRuntime === "cli")) &&
+    !(await ensureCliDownloaded(configuration, secrets))
+  ) {
+    // cli is not available and user chose to cancel download
+    vscode.window.showErrorMessage("42Crunch API Security Testing Binary is required to run Scan.");
+    return;
+  }
+
+  const bundle = await cache.getDocumentBundle(editor.document);
+
+  if (!bundle || "errors" in bundle) {
+    vscode.commands.executeCommand("workbench.action.problems.focus");
+    vscode.window.showErrorMessage("Failed to bundle, check OpenAPI file for errors.");
+    return;
+  }
+
+  const title = bundle?.value?.info?.title || "OpenAPI";
+  const scanconfUri = getOrCreateScanconfUri(editor.document.uri, title);
+
+  if (
+    (scanconfUri === undefined || !(await existsUri(scanconfUri))) &&
+    !(await createDefaultScanConfig(
+      editor.document,
+      store,
+      cache,
+      secrets,
+      config.platformAuthType,
+      config.scanRuntime,
+      config.cliDirectoryOverride,
+      scanconfUri,
+      bundle
+    ))
+  ) {
+    return;
+  }
+
+  const view = getScanView(editor.document.uri);
+  return view.sendScanOperation(bundle, editor.document, scanconfUri, path, method);
+}
+
+async function createDefaultScanConfig(
+  document: vscode.TextDocument,
+  store: PlatformStore,
+  cache: Cache,
+  secrets: vscode.SecretStorage,
+  platformAuthType: "api-token" | "anond-token",
+  scanRuntime: "docker" | "scand-manager" | "cli",
+  cliDirectoryOverride: string,
+  scanconfUri: vscode.Uri,
+  bundle: Bundle
+): Promise<boolean> {
+  return vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Notification,
+      title: "Creating scan configuration...",
+      cancellable: false,
+    },
+    async (progress, cancellationToken): Promise<boolean> => {
+      try {
+        const oas = stringify(bundle.value);
+
+        const config = await loadConfig(configuration, secrets);
+
+        if (platformAuthType === "anond-token") {
+          // free users must use CLI for scan, there is no need to fallback to anond for initial audit
+          // if there is no CLI available, they will not be able to run scan or create a scan config in any case
+          await createScanConfigWithCliBinary(scanconfUri, oas, cliDirectoryOverride);
+        } else {
+          if (scanRuntime === "cli") {
+            const [report, reportError] = await runAuditWithCliBinary(
+              secrets,
+              config,
+              emptyLogger,
+              oas,
+              [],
+              true,
+              cliDirectoryOverride
+            );
+
+            if (reportError !== undefined) {
+              throw new Error(
+                "Failed to run Audit for Conformance Scan: " + reportError.statusMessage
+                  ? reportError.statusMessage
+                  : JSON.stringify(reportError)
+              );
+            }
+
+            if ((report.audit as any).openapiState !== "valid") {
+              throw new Error(
+                "Your API has structural or semantic issues in its OpenAPI format. Run Security Audit on this file and fix these issues first."
+              );
+            }
+
+            await createScanConfigWithCliBinary(scanconfUri, oas, cliDirectoryOverride);
+          } else {
+            // this will run audit on the platform as well
+            await createScanConfigWithPlatform(store, scanconfUri, oas);
+          }
+        }
+
+        vscode.window.showInformationMessage(
+          `Saved API Conformance Scan configuration to: ${scanconfUri.toString()}`
+        );
+
+        return true;
+      } catch (e: any) {
+        vscode.window.showErrorMessage(
+          "Failed to create default config: " + ("message" in e ? e.message : e.toString())
+        );
+        return false;
       }
-    } else {
-      crawl(root, value, visited);
     }
-  }
+  );
 }
 
-function resolveRef(root: any, pointer: string) {
-  const path = parseJsonPointer(pointer);
-  let current = root;
-  for (let i = 0; i < path.length; i++) {
-    current = current[path[i]];
+async function editorOpenScanconfig(editor: vscode.TextEditor): Promise<void> {
+  const scanconfUri = getScanconfUri(editor.document.uri);
+  if (scanconfUri === undefined || !existsUri(scanconfUri)) {
+    await vscode.window.showErrorMessage(
+      "No scan configuration found for the current document. Please create one first by running a scan.",
+      { modal: true }
+    );
+    return undefined;
   }
-  return current;
+
+  await vscode.window.showTextDocument(scanconfUri);
 }
 
-function copyByPointer(src: any, dest: any, pointers: string[]) {
-  const sortedPointers = [...pointers];
-  sortedPointers.sort();
-  for (const pointer of sortedPointers) {
-    const path = parseJsonPointer(pointer);
-    copyByPath(src, dest, path);
-  }
-}
-
-function copyByPath(src: any, dest: any, path: Path): void {
-  let currentSrc = src;
-  let currentDest = dest;
-  for (let i = 0; i < path.length - 1; i++) {
-    const key = path[i];
-    currentSrc = currentSrc[key];
-    if (currentDest[key] === undefined) {
-      if (Array.isArray(currentSrc[key])) {
-        currentDest[key] = [];
-      } else {
-        currentDest[key] = {};
-      }
-    }
-    currentDest = currentDest[key];
-  }
-  const key = path[path.length - 1];
-  // check if the last segment of the path that is being copied is already set
-  // which might be the case if we've copied the parent of the path already
-  if (currentDest[key] === undefined) {
-    currentDest[key] = currentSrc[key];
-  }
-}
+const emptyLogger: Logger = {
+  fatal: function (message: string): void {},
+  error: function (message: string): void {},
+  warning: function (message: string): void {},
+  info: function (message: string): void {},
+  debug: function (message: string): void {},
+};

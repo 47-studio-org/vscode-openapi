@@ -44,6 +44,10 @@ import { getLocationByPointer } from "./util";
 import { generateSchemaFixCommand, createGenerateSchemaAction } from "./quickfix-schema";
 import { simpleClone } from "@xliic/preserving-json-yaml-parser";
 import { findJsonNodeValue } from "../json-utils";
+import { DataDictionaryFormat, PlatformStore } from "../platform/stores/platform-store";
+import { setAudit } from "./service";
+import { walk } from "../util/extract";
+import { encodeJsonPointerSegment, joinJsonPointer } from "../pointer";
 
 const registeredQuickFixes: { [key: string]: Fix } = {};
 
@@ -159,7 +163,7 @@ function fixRenameKey(context: FixContext) {
   edit.replace(document.uri, range, value);
 }
 
-function fixDelete(context: FixContext) {
+export function fixDelete(context: FixContext) {
   const document = context.document;
   let range: vscode.Range;
   context.snippet = false;
@@ -168,8 +172,52 @@ function fixDelete(context: FixContext) {
   } else {
     range = deleteJsonNode(context);
   }
-  const edit = getWorkspaceEdit(context);
-  edit.delete(document.uri, range);
+  if (!range) {
+    return;
+  }
+  if (!context["rangesToRemove"]) {
+    context["rangesToRemove"] = [range];
+    return;
+  }
+  const nonOpRanges = context["rangesToRemove"];
+  if (nonOpRanges.some((r) => r.contains(range))) {
+    return;
+  }
+  const ranges = [];
+  nonOpRanges.forEach((r) => ranges.push(r));
+  for (const r of nonOpRanges) {
+    if (range.contains(r)) {
+      removeRange(ranges, r);
+    } else if (r.intersection(range)) {
+      removeRange(ranges, r);
+      range = r.union(range);
+    }
+  }
+  ranges.push(range);
+  context["rangesToRemove"] = ranges;
+}
+
+export function fixDeleteApplyIfNeeded(context: FixContext) {
+  if (context.positionsToInsert) {
+    for (const range of context.positionsToInsert) {
+      context.edit.insert(context.document.uri, range[0], range[1]);
+    }
+    context.positionsToInsert = [];
+  }
+  if (context.rangesToRemove) {
+    for (const range of context.rangesToRemove) {
+      context.edit.delete(context.document.uri, range);
+    }
+    context.rangesToRemove = [];
+  }
+}
+
+function removeRange(ranges: vscode.Range[], rangeToRemove: vscode.Range) {
+  ranges.forEach((range, index) => {
+    if (range === rangeToRemove) {
+      ranges.splice(index, 1);
+    }
+  });
 }
 
 function transformInsertToReplaceIfExists(context: FixContext): boolean {
@@ -203,7 +251,9 @@ async function quickFixCommand(
   issues: Issue[],
   fix: InsertReplaceRenameFix | RegexReplaceFix | DeleteFix,
   auditContext: AuditContext,
-  cache: Cache
+  store: PlatformStore,
+  cache: Cache,
+  reportWebView: AuditReportWebView | undefined
 ) {
   let edit: vscode.WorkspaceEdit = null;
   let snippetParameters: FixSnippetParameters = null;
@@ -228,6 +278,14 @@ async function quickFixCommand(
   // Bulk means all issues share same id, but have different pointers
   const bulk = Object.keys(issuesByPointer).length > 1;
 
+  const formatMap = new Map<string, DataDictionaryFormat>();
+  if (store.isConnected()) {
+    const formats = await store.getDataDictionaryFormats();
+    for (const format of formats) {
+      formatMap.set(format.name, format);
+    }
+  }
+
   for (const issuePointer of Object.keys(issuesByPointer)) {
     // if fix.pointer exists, append it to diagnostic.pointer
     const pointer = fix.pointer ? `${issuePointer}${fix.pointer}` : issuePointer;
@@ -246,6 +304,7 @@ async function quickFixCommand(
       root: root,
       target: target,
       document: document,
+      formatMap: formatMap,
     };
 
     switch (fix.type) {
@@ -283,6 +342,7 @@ async function quickFixCommand(
 
   // Apply only if has anything to apply
   if (edit) {
+    fixDeleteApplyIfNeeded(context);
     await vscode.workspace.applyEdit(edit);
   } else if (snippetParameters) {
     await processSnippetParameters(editor, snippetParameters, dropBrackets);
@@ -298,7 +358,7 @@ export function updateReport(
   issues: Issue[],
   auditContext: AuditContext,
   cache: Cache,
-  reportWebView: AuditReportWebView
+  reportWebView: AuditReportWebView | undefined
 ): void {
   const document = editor.document;
   const uri = document.uri.toString();
@@ -333,18 +393,22 @@ export function updateReport(
   updateDiagnostics(auditContext.diagnostics, audit.filename, audit.issues);
   updateDecorations(auditContext.decorations, audit.summary.documentUri, audit.issues);
   setDecorations(editor, auditContext);
-  reportWebView.showIfVisible(audit);
+  if (reportWebView) {
+    reportWebView.showIfVisible(audit);
+  }
 }
 
 export function registerQuickfixes(
   context: vscode.ExtensionContext,
   cache: Cache,
   auditContext: AuditContext,
+  store: PlatformStore,
   reportWebView: AuditReportWebView
 ) {
   vscode.commands.registerTextEditorCommand(
     "openapi.simpleQuickFix",
-    async (editor, edit, issues, fix) => quickFixCommand(editor, issues, fix, auditContext, cache)
+    async (editor, edit, issues, fix) =>
+      quickFixCommand(editor, issues, fix, auditContext, store, cache, reportWebView)
   );
 
   vscode.commands.registerTextEditorCommand(
@@ -640,4 +704,106 @@ function getIssuesByPointers(issues: Issue[]): { [key: string]: Issue[] } {
 
 function getIssueUniqueId(issue: Issue): string {
   return issue.id + issue.pointer;
+}
+
+export function getDeadRefs(targetPointer: string, context: FixContext): [] {
+  const refDeps = {};
+  const bundle = context.bundle;
+  walk(bundle.value, null, [], (_parent, path, key, value) => {
+    if (key === "$ref" && typeof value === "string" && value.startsWith("#/")) {
+      const pointer = joinJsonPointer(path.reverse());
+      if (!(value in refDeps)) {
+        refDeps[value] = new Set<string>();
+      }
+      refDeps[value].add(pointer);
+    }
+  });
+  const myRefs = new Set<string>();
+  refWalk(context.root, context.target, myRefs);
+  if (myRefs.size === 0) {
+    return [];
+  }
+  const deadRefs = [];
+  for (const myRef of myRefs) {
+    // If targetPointer = /paths/~1pets, pointers = [/paths/~1pets~1{petId}/..., /paths/~1pets/...]
+    // Use targetPointer + "/" to filter only target pointer (not all pointers)
+    const pointers = [...refDeps[myRef]].filter((p) => !p.startsWith(targetPointer + "/"));
+    if (pointers.length === 0) {
+      deadRefs.push(myRef);
+    } else {
+      // If at least one pointer is referenced from any path (not targetPointer path) we must never delete it
+      if (!pointers.some((p) => p.startsWith("/paths/"))) {
+        // Fast check that pointers may belong to dead refs, for example:
+        // myRef = #/components/schemas/Pet
+        // pointers = [/components/schemas/Pets/items]
+        // deadRefs = [#/components/schemas/Pets]
+        // It may help to decrease number of recursive calls in checkIfSomePointerDead
+        const pointersToCheck = pointers.filter((p) => !assertPointerBelongToRefs(p, deadRefs));
+        if (pointersToCheck.length === 0) {
+          deadRefs.push(myRef);
+        } else {
+          // Here we may be unaware of all dead refs, for example
+          // myRef = #/components/schemas/Pet
+          // pointers = [/components/schemas/Pets/items]
+          // deadRefs = []
+          if (checkAllPointersDead(pointersToCheck, refDeps, targetPointer)) {
+            deadRefs.push(myRef);
+          }
+        }
+      }
+    }
+  }
+  return deadRefs;
+}
+
+function assertPointerBelongToRefs(pointer: string, refs: string[]): boolean {
+  const myRef = "#" + pointer;
+  return refs.some((ref) => myRef === ref || myRef.startsWith(ref + "/"));
+}
+
+function checkAllPointersDead(pointers: string[], refDeps: any, targetPointer: string): boolean {
+  for (const pointer of pointers) {
+    for (const ref of Object.keys(refDeps)) {
+      if (assertPointerBelongToRefs(pointer, [ref])) {
+        // Handle possible circular references using p !== pointer
+        const refs = [...refDeps[ref]].filter(
+          (p) => !p.startsWith(targetPointer + "/") && p !== pointer
+        );
+        if (refs.length > 0) {
+          if (refs.some((p) => p.startsWith("/paths/"))) {
+            return false;
+          } else {
+            refs = removeAll(refs, pointers); // Avoid infinite recursion
+            if (refs.length > 0) {
+              return checkAllPointersDead(refs, refDeps, targetPointer);
+            }
+          }
+        }
+      }
+    }
+  }
+  return true;
+}
+
+function removeAll(deleteFrom: string[], pointersToDelete: string[]): string[] {
+  const res: string[] = [];
+  for (const item of deleteFrom) {
+    const index = pointersToDelete.indexOf(item);
+    if (index === -1) {
+      res.push(item);
+    }
+  }
+  return res;
+}
+
+function refWalk(root: any, target: any, refs: Set<string>) {
+  walk(target, null, [], (_parent, _path, key, value) => {
+    if (key === "$ref" && typeof value === "string" && value.startsWith("#/") && !(value in refs)) {
+      refs.add(value);
+      const refTarget = findJsonNodeValue(root, value.replace("#/", "/"));
+      if (refTarget) {
+        refWalk(root, refTarget, refs);
+      }
+    }
+  });
 }

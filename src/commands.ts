@@ -14,10 +14,16 @@ import * as snippets from "./generated/snippets.json";
 import { Cache } from "./cache";
 import { Fix, FixContext, FixType, OpenApiVersion } from "./types";
 import { findJsonNodeValue } from "./json-utils";
-import { fixInsert } from "./audit/quickfix";
+import {
+  fixInsert,
+  fixDelete,
+  fixDeleteApplyIfNeeded,
+  getDeadRefs,
+  getDeadRefs,
+} from "./audit/quickfix";
 import { getPointerLastSegment, getPointerParent } from "./pointer";
 import { processSnippetParameters } from "./util";
-import { Node, outlines } from "./outline";
+import { OutlineNode } from "./outlines/nodes/base";
 
 const commands: { [key: string]: Function } = {
   goToLine,
@@ -41,6 +47,8 @@ const commands: { [key: string]: Function } = {
   addParameterPath,
   addParameterOther,
   addResponse,
+  deleteOperation,
+  deletePath,
 
   v3addInfo,
   v3addComponentsResponse,
@@ -52,16 +60,7 @@ const commands: { [key: string]: Function } = {
   v3addSecuritySchemeJWT,
   v3addSecuritySchemeOauth2Access,
 
-  copySelectedTwoPathOutlineJsonReference,
-  copySelectedTwoParametersOutlineJsonReference,
-  copySelectedTwoResponsesOutlineJsonReference,
-  copySelectedTwoDefinitionOutlineJsonReference,
-  copySelectedTwoSecurityOutlineJsonReference,
-  copySelectedTwoSecurityDefinitionOutlineJsonReference,
-  copySelectedThreePathOutlineJsonReference,
-  copySelectedThreeServersOutlineJsonReference,
-  copySelectedThreeComponentsOutlineJsonReference,
-  copySelectedThreeSecurityOutlineJsonReference,
+  copyNodeJsonReference,
 };
 
 export const registeredSnippetQuickFixes: { [key: string]: Fix } = {};
@@ -113,63 +112,9 @@ async function copyJsonReference(cache: Cache, range: vscode.Range) {
   }
 }
 
-function copySelectedTwoPathOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoPathOutline");
-}
-
-function copySelectedTwoParametersOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoParametersOutline");
-}
-
-function copySelectedTwoResponsesOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoResponsesOutline");
-}
-
-function copySelectedTwoDefinitionOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoDefinitionOutline");
-}
-
-function copySelectedTwoSecurityOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoSecurityOutline");
-}
-
-function copySelectedTwoSecurityDefinitionOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiTwoSecurityDefinitionOutline");
-}
-
-function copySelectedThreePathOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiThreePathOutline");
-}
-
-function copySelectedThreeServersOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiThreeServersOutline");
-}
-
-function copySelectedThreeComponentsOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiThreeComponentsOutline");
-}
-
-function copySelectedThreeSecurityOutlineJsonReference(cache: Cache) {
-  copySelectedJsonReference("openapiThreeSecurityOutline");
-}
-
-function copySelectedJsonReference(viewId: string) {
-  copyNodeJsonReference(outlines[viewId].selection[0]);
-}
-
-function copyNodeJsonReference(node: Node) {
+function copyNodeJsonReference(cache: Cache, node: OutlineNode) {
   if (node) {
-    const path = [];
-    for (let current = node; current.key !== undefined; current = current.parent) {
-      path.unshift(current.key);
-    }
-    const pointer = joinJsonPointer(path);
-    // JSON Pointer is allowed to have special chars, but JSON Reference
-    // requires these to be encoded
-    const encoded = pointer
-      .split("/")
-      .map((segment) => encodeURIComponent(segment))
-      .join("/");
+    const encoded = node.id;
     vscode.env.clipboard.writeText(`#${encoded}`);
     const disposable = vscode.window.setStatusBarMessage(`Copied Reference: #${encoded}`);
     setTimeout(() => disposable.dispose(), 1000);
@@ -208,7 +153,7 @@ async function createNewTwo(cache: Cache) {
 async function createNewThree(cache: Cache) {
   await createNew(
     `{
-    "openapi":"3.0.2",
+    "openapi":"3.0.3",
     "info": {
       "title":"\${1:API Title}",
       "version":"\${2:1.0}"
@@ -245,7 +190,7 @@ paths:
 
 async function createNewThreeYaml(cache: Cache) {
   await createNew(
-    `openapi: '3.0.2'
+    `openapi: '3.0.3'
 info:
   title: \${1:API Title}
   version: \${2:'1.0'}
@@ -352,8 +297,16 @@ async function v3addServer(cache: Cache) {
 
 async function addOperation(cache: Cache, node: any) {
   const fix = registeredSnippetQuickFixes["operation"];
-  fix.pointer = joinJsonPointer(["paths", node.key]);
+  fix.pointer = node.id;
   await snippetCommand(fix, cache);
+}
+
+async function deleteOperation(cache: Cache, node: any) {
+  deleteSnippetCommand(cache, node);
+}
+
+async function deletePath(cache: Cache, node: any) {
+  deleteSnippetCommand(cache, node);
 }
 
 function noActiveOpenApiEditorGuard(cache: Cache) {
@@ -445,6 +398,130 @@ export async function snippetCommand(fix: Fix, cache: Cache, useEdit?: boolean) 
   }
 }
 
+async function deleteSnippetCommand(cache: Cache, node: any) {
+  const editor = vscode.window.activeTextEditor;
+  if (noActiveOpenApiEditorGuard(cache) || !editor) {
+    return;
+  }
+  const document = editor.document;
+  const root = cache.getLastGoodParsedDocument(document);
+  if (!root) {
+    return;
+  }
+  const bundle = await cache.getDocumentBundle(document);
+  if ("errors" in bundle) {
+    return;
+  }
+  const version = cache.getDocumentVersion(document);
+  const pointer = node.id;
+  const target = findJsonNodeValue(root, pointer);
+  const context: FixContext = {
+    editor: editor,
+    edit: new vscode.WorkspaceEdit(),
+    issues: [],
+    fix: {
+      problem: [],
+      type: FixType.Delete,
+      title: "",
+    },
+    bulk: false,
+    auditContext: null,
+    version: version,
+    bundle: bundle,
+    root: root,
+    target: target,
+    document: document,
+  };
+  const deadRefs = getDeadRefs(pointer, context);
+  if (deadRefs.length > 0) {
+    fixDelete(context);
+    const prompt = "Are you sure you want to delete unused schemas?";
+    const confirmation = await vscode.window.showInformationMessage(prompt, "Yes", "No");
+    if (confirmation && confirmation === "Yes") {
+      let pointers = deadRefs.map((ref) => ref.replace("#/", "/"));
+      const compsToRemove = getPointersByComponents(pointers, version);
+      const allComps = getPointersByComponents(getAllComponentPointers(root, version), version);
+      for (const [c, cPointers] of Object.entries(compsToRemove)) {
+        if (c in allComps && cmpSets(allComps[c], cPointers)) {
+          pointers = pointers.filter((p) => !cPointers.has(p));
+          pointers.push(version === OpenApiVersion.V3 ? "/components/" + c : "/" + c);
+        }
+      }
+      context.pointersToRemove = new Set<string>(pointers);
+      for (const pointer of pointers) {
+        context.target = findJsonNodeValue(root, pointer);
+        fixDelete(context);
+      }
+    }
+  } else {
+    fixDelete(context);
+  }
+  fixDeleteApplyIfNeeded(context);
+  await vscode.workspace.applyEdit(context.edit);
+}
+
 function isArray(key: string): boolean {
   return key === "security" || key === "servers";
+}
+
+export function getAllComponentPointers(
+  root: any,
+  version: OpenApiVersion
+): Map<string, Set<string>> {
+  const res = [];
+  if (version === OpenApiVersion.V3) {
+    const components = findJsonNodeValue(root, "/components");
+    if (components) {
+      for (const component of components.getChildren()) {
+        for (const item of component.getChildren()) {
+          res.push(item.pointer);
+        }
+      }
+    }
+  } else {
+    const components = new Set([
+      "responses",
+      "parameters",
+      "definitions",
+      "securityDefinitions",
+      "security",
+    ]);
+    for (const componentName of components) {
+      const component = findJsonNodeValue(root, "/" + componentName);
+      if (component) {
+        for (const item of component.getChildren()) {
+          res.push(item.pointer);
+        }
+      }
+    }
+  }
+  return res;
+}
+
+export function getPointersByComponents(
+  pointers: string[],
+  version: OpenApiVersion
+): Map<string, Set<string>> {
+  const res = {};
+  const index = version === OpenApiVersion.V3 ? 2 : 1;
+  for (const pointer of pointers) {
+    const component = pointer.split("/")[index];
+    if (!(component in res)) {
+      res[component] = new Set<string>();
+    }
+    res[component].add(pointer);
+  }
+  return res;
+}
+
+export function cmpSets(set1: Set<string>, set2: Set<string>): boolean {
+  if (set1.size !== set2.size) {
+    return false;
+  }
+  for (const item in set1) {
+    if (!set2.has(item)) {
+      return false;
+    }
+  }
+  return true;
 }

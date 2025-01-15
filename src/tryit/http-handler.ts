@@ -6,26 +6,32 @@
 import got, { RequestError } from "got";
 import FormData from "form-data";
 
-import { HttpRequest, HttpResponse } from "@xliic/common/http";
-import { ErrorMessage, TryItRequest } from "@xliic/common/messages/tryit";
+import { HttpRequest, HttpResponse, HttpError, HttpConfig } from "@xliic/common/http";
+import { ShowHttpResponseMessage, ShowHttpErrorMessage } from "@xliic/common/http";
 
-export async function executeHttpRequest(payload: HttpRequest): Promise<TryItRequest> {
+export async function executeHttpRequest(payload: {
+  request: HttpRequest;
+  config: HttpConfig;
+}): Promise<ShowHttpResponseMessage | ShowHttpErrorMessage> {
   try {
-    const response = await executeHttpRequestRaw(payload);
+    const response = await executeHttpRequestRaw(payload.request, payload.config);
     return {
-      command: "showResponse",
-      payload: response,
+      command: "showHttpResponse",
+      payload: { id: "", response },
     };
   } catch (e) {
     return {
-      command: "showError",
-      payload: e as ErrorMessage,
+      command: "showHttpError",
+      payload: { id: "", error: e as HttpError },
     };
   }
 }
 
-export async function executeHttpRequestRaw(payload: HttpRequest): Promise<HttpResponse> {
-  const { url, method, headers, body, config } = payload;
+export async function executeHttpRequestRaw(
+  payload: HttpRequest,
+  config: HttpConfig
+): Promise<HttpResponse> {
+  const { url, method, headers, body } = payload;
 
   const restoredBody = restoreBody(body, getContentType(headers));
 
@@ -50,6 +56,9 @@ export async function executeHttpRequestRaw(payload: HttpRequest): Promise<HttpR
       },
       https: {
         rejectUnauthorized: config?.https?.rejectUnauthorized ?? true,
+      },
+      retry: {
+        limit: 0,
       },
     });
 

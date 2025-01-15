@@ -1,12 +1,14 @@
 import * as vscode from "vscode";
-import { parseAuditReport, updateAuditContext } from "../audit/audit";
-import { setDecorations, updateDecorations } from "../audit/decoration";
-import { updateDiagnostics } from "../audit/diagnostic";
+import { Audit } from "@xliic/common/audit";
+import { parseAuditReport } from "../audit/audit";
+import { setDecorations } from "../audit/decoration";
 import { Cache } from "../cache";
 
-import { Audit, AuditContext } from "../types";
+import { AuditContext } from "../types";
 import { PlatformStore } from "./stores/platform-store";
 import { getApiId, isPlatformUri } from "./util";
+import { setAudit } from "../audit/service";
+import { saveAuditReportToTempDirectory } from "../audit/util";
 
 export async function refreshAuditReport(
   store: PlatformStore,
@@ -18,11 +20,19 @@ export async function refreshAuditReport(
     const uri = document.uri.toString();
     const apiId = getApiId(document.uri)!;
     const report = await store.getAuditReport(apiId);
+    const compliance = await store.readAuditCompliance(report.tid);
+    const todoReport = await store.readAuditReportSqgTodo(report.tid);
+    const tempAuditDirectory = await saveAuditReportToTempDirectory(report.data);
 
-    const audit = await parseAuditReport(cache, document, report, {
+    const mapping = {
       value: { uri, hash: "" },
       children: {},
-    });
+    };
+
+    const audit = await parseAuditReport(cache, document, report.data, mapping);
+    const { issues: todo } = await parseAuditReport(cache, document, todoReport.data, mapping);
+    audit.compliance = compliance;
+    audit.todo = todo;
 
     if (audit) {
       // TODO better handling of failing autids
@@ -33,9 +43,7 @@ export async function refreshAuditReport(
         auditContext.diagnostics.set(document.uri, undefined);
         auditContext.decorations[uri] = [];
       } else {
-        updateAuditContext(auditContext, uri, audit);
-        updateDecorations(auditContext.decorations, audit.summary.documentUri, audit.issues);
-        updateDiagnostics(auditContext.diagnostics, audit.filename, audit.issues);
+        setAudit(auditContext, uri, audit, tempAuditDirectory);
       }
       if (vscode.window.activeTextEditor?.document === document) {
         setDecorations(vscode.window.activeTextEditor, auditContext);
